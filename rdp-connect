@@ -1,0 +1,214 @@
+#!/bin/bash
+
+# Default values
+HOSTNAME="localhost"
+PORT="3389"
+USERNAME=""
+FULLSCREEN=false
+
+# SOCKS5 proxy defaults
+USE_PROXY=true
+SOCKS_HOST="127.0.0.1"
+SOCKS_PORT="5000"
+
+# Tunnel tracking
+SOCAT_PID=""
+LOCAL_PORT=""
+RDP_FILE=""
+
+# Parse arguments
+usage() {
+    echo "Usage: $0 [user@]host [OPTIONS]"
+    echo ""
+    echo "Positional:"
+    echo "  [user@]host              SSH-style connection string (e.g., jeff@192.168.176.74)"
+    echo ""
+    echo "Options:"
+    echo "  -h, --host HOSTNAME      Hostname or IP address (default: localhost)"
+    echo "  -p, --port PORT          RDP port (default: 3389)"
+    echo "  -u, --username USERNAME  Username for RDP connection"
+    echo "  -f, --fullscreen         Use fullscreen mode (default: windowed)"
+    echo ""
+    echo "SOCKS5 Proxy Options:"
+    echo "  --socks-host HOST        SOCKS5 proxy host (default: 127.0.0.1)"
+    echo "  --socks-port PORT        SOCKS5 proxy port (default: 5000)"
+    echo "  --direct                 Connect directly without SOCKS5 proxy"
+    echo ""
+    echo "  --help                   Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0 jeff@192.168.176.74"
+    echo "  $0 jeff@192.168.176.74 --socks-port 1080 -f"
+    echo "  $0 jeff@192.168.176.74 --direct"
+    echo "  $0 -u admin -h 10.0.0.5 -p 3390"
+    exit 1
+}
+
+# Parse positional argument for user@host syntax
+if [[ $# -gt 0 ]] && [[ "$1" != -* ]]; then
+    CONN_STRING="$1"
+    shift
+
+    # Parse user@host format
+    if [[ "$CONN_STRING" =~ ^([^@]+)@(.+)$ ]]; then
+        USERNAME="${BASH_REMATCH[1]}"
+        HOSTNAME="${BASH_REMATCH[2]}"
+    else
+        HOSTNAME="$CONN_STRING"
+    fi
+fi
+
+# Parse remaining options
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--host)
+            HOSTNAME="$2"
+            shift 2
+            ;;
+        -p|--port)
+            PORT="$2"
+            shift 2
+            ;;
+        -u|--username)
+            USERNAME="$2"
+            shift 2
+            ;;
+        -f|--fullscreen)
+            FULLSCREEN=true
+            shift
+            ;;
+        --socks-host)
+            SOCKS_HOST="$2"
+            shift 2
+            ;;
+        --socks-port)
+            SOCKS_PORT="$2"
+            shift 2
+            ;;
+        --direct)
+            USE_PROXY=false
+            shift
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
+
+# Function to find a random available port
+find_available_port() {
+    local port
+    while true; do
+        port=$(( 10000 + RANDOM % 55000 ))
+        if ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+            echo $port
+            return 0
+        fi
+    done
+}
+
+# Cleanup function
+cleanup() {
+    # Kill socat if running
+    if [ -n "$SOCAT_PID" ]; then
+        kill $SOCAT_PID 2>/dev/null
+        wait $SOCAT_PID 2>/dev/null
+    fi
+
+    # Remove temporary .rdp file
+    if [ -n "$RDP_FILE" ] && [ -f "$RDP_FILE" ]; then
+        rm -f "$RDP_FILE"
+    fi
+}
+
+# Set trap to cleanup on exit
+trap cleanup EXIT INT TERM
+
+# Determine target host and port
+TARGET_HOST="$HOSTNAME"
+TARGET_PORT="$PORT"
+
+# If using SOCKS5 proxy, set up socat tunnel
+if [ "$USE_PROXY" = true ]; then
+    # Check if socat is available
+    if ! command -v socat &> /dev/null; then
+        echo "Error: socat is required for SOCKS5 proxy mode"
+        echo "Install with: brew install socat"
+        exit 1
+    fi
+
+    # Find available local port
+    LOCAL_PORT=$(find_available_port)
+
+    echo "Setting up SOCKS5 tunnel..."
+    echo "  Target: $TARGET_HOST:$TARGET_PORT"
+    echo "  SOCKS5 Proxy: $SOCKS_HOST:$SOCKS_PORT"
+    echo "  Local Port: $LOCAL_PORT"
+
+    # Start socat tunnel in background
+    socat TCP-LISTEN:$LOCAL_PORT,reuseaddr,fork SOCKS5:$SOCKS_HOST:$TARGET_HOST:$TARGET_PORT,socksport=$SOCKS_PORT &
+    SOCAT_PID=$!
+
+    # Give socat a moment to start
+    sleep 0.5
+
+    # Check if socat is still running
+    if ! kill -0 $SOCAT_PID 2>/dev/null; then
+        echo "Error: Failed to start SOCKS5 tunnel"
+        exit 1
+    fi
+
+    # Update connection target to localhost
+    HOSTNAME="localhost"
+    PORT="$LOCAL_PORT"
+else
+    echo "Direct connection mode"
+fi
+
+# Create temporary .rdp file
+RDP_FILE=$(mktemp /tmp/rdp_connection_XXXXXX.rdp)
+
+# Determine screen mode (1 = windowed, 2 = fullscreen)
+SCREEN_MODE=$([ "$FULLSCREEN" = true ] && echo "2" || echo "1")
+
+# Generate .rdp file content
+cat > "$RDP_FILE" << EOF
+screen mode id:i:$SCREEN_MODE
+full address:s:$HOSTNAME:$PORT
+EOF
+
+# Add username if provided
+if [ -n "$USERNAME" ]; then
+    echo "username:s:$USERNAME" >> "$RDP_FILE"
+fi
+
+# Launch Windows App with the .rdp file
+echo "Launching RDP connection to $TARGET_HOST:$TARGET_PORT..."
+if [ -n "$USERNAME" ]; then
+    echo "Username: $USERNAME"
+fi
+
+open -a "/Applications/Windows App.app" "$RDP_FILE"
+
+# Wait for Windows App to read the file
+sleep 2
+
+# Remove the temporary .rdp file
+rm -f "$RDP_FILE"
+RDP_FILE=""
+
+echo ""
+echo "RDP connection launched successfully"
+if [ "$USE_PROXY" = true ]; then
+    echo "SOCKS5 tunnel is running (PID: $SOCAT_PID)"
+    echo "Press Ctrl+C to close the tunnel when done"
+
+    # Wait for user to terminate or socat to exit
+    wait $SOCAT_PID 2>/dev/null
+else
+    echo "Connection established in direct mode"
+fi
