@@ -11,6 +11,10 @@ USE_PROXY=true
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="5000"
 
+# SSH tunnel
+SSH_TUNNEL=""
+SSH_PID=""
+
 # Tunnel tracking
 SOCAT_PID=""
 LOCAL_PORT=""
@@ -29,6 +33,10 @@ usage() {
     echo "  -u, --username USERNAME  Username for RDP connection"
     echo "  -f, --fullscreen         Use fullscreen mode (default: windowed)"
     echo ""
+    echo "SSH Tunnel Options:"
+    echo "  -v, --via [user@]jumphost"
+    echo "                           Create SSH SOCKS5 tunnel via jumphost"
+    echo ""
     echo "SOCKS5 Proxy Options:"
     echo "  --socks-host HOST        SOCKS5 proxy host (default: 127.0.0.1)"
     echo "  --socks-port PORT        SOCKS5 proxy port (default: 5000)"
@@ -38,6 +46,7 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  $0 jeff@192.168.176.74"
+    echo "  $0 jeff@192.168.176.74 -v user@jumphost.com"
     echo "  $0 jeff@192.168.176.74 --socks-port 1080 -f"
     echo "  $0 jeff@192.168.176.74 --direct"
     echo "  $0 -u admin -h 10.0.0.5 -p 3390"
@@ -85,6 +94,10 @@ while [[ $# -gt 0 ]]; do
             SOCKS_PORT="$2"
             shift 2
             ;;
+        -v|--via)
+            SSH_TUNNEL="$2"
+            shift 2
+            ;;
         --direct)
             USE_PROXY=false
             shift
@@ -119,6 +132,12 @@ cleanup() {
         wait $SOCAT_PID 2>/dev/null
     fi
 
+    # Kill SSH tunnel if running
+    if [ -n "$SSH_PID" ]; then
+        kill $SSH_PID 2>/dev/null
+        wait $SSH_PID 2>/dev/null
+    fi
+
     # Remove temporary .rdp file
     if [ -n "$RDP_FILE" ] && [ -f "$RDP_FILE" ]; then
         rm -f "$RDP_FILE"
@@ -127,6 +146,40 @@ cleanup() {
 
 # Set trap to cleanup on exit
 trap cleanup EXIT INT TERM
+
+# Set up SSH tunnel if --via is specified
+if [ -n "$SSH_TUNNEL" ]; then
+    echo "Creating SSH SOCKS5 tunnel via $SSH_TUNNEL..."
+
+    # Find available port for SOCKS5 proxy
+    SOCKS_PORT=$(find_available_port)
+
+    # Start SSH tunnel with SOCKS5 proxy
+    ssh -D $SOCKS_PORT -N -f $SSH_TUNNEL
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to create SSH tunnel to $SSH_TUNNEL"
+        exit 1
+    fi
+
+    # Give SSH a moment to establish the tunnel
+    sleep 1
+
+    # Get the SSH process ID
+    SSH_PID=$(ps aux | grep "ssh -D $SOCKS_PORT -N -f $SSH_TUNNEL" | grep -v grep | awk '{print $2}')
+
+    if [ -z "$SSH_PID" ]; then
+        echo "Warning: Could not find SSH tunnel process"
+    else
+        echo "  SSH Tunnel: $SSH_TUNNEL"
+        echo "  SOCKS5 Port: $SOCKS_PORT"
+        echo "  SSH PID: $SSH_PID"
+    fi
+
+    # Update SOCKS proxy settings to use the SSH tunnel
+    SOCKS_HOST="127.0.0.1"
+    USE_PROXY=true
+fi
 
 # Determine target host and port
 TARGET_HOST="$HOSTNAME"

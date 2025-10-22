@@ -5,6 +5,7 @@ A simple bash wrapper for macOS that creates RDP connections using Windows App (
 ## Features
 
 - **SSH-style syntax**: Connect using `user@host` format
+- **Integrated SSH tunneling**: Automatically creates SSH SOCKS5 tunnels with `--via` option
 - **SOCKS5 proxy support**: Automatically tunnels RDP through SOCKS5 proxy (enabled by default)
 - **Dynamic port allocation**: Automatically finds available local ports for tunneling
 - **Simple .rdp generation**: Creates minimal .rdp files on-the-fly
@@ -44,6 +45,13 @@ Connect via SOCKS5 proxy (default):
 ./rdp-connect jeff@192.168.176.74
 ```
 
+Connect via SSH tunnel to jumphost:
+```bash
+./rdp-connect jeff@internal-server -v user@jumphost.com
+# or
+./rdp-connect jeff@internal-server --via user@jumphost.com
+```
+
 Connect in fullscreen mode:
 ```bash
 ./rdp-connect jeff@192.168.176.74 -f
@@ -79,6 +87,12 @@ Traditional syntax (username and host separately):
 -f, --fullscreen         Use fullscreen mode (default: windowed)
 ```
 
+### SSH Tunnel Options
+```
+-v, --via [user@]jumphost
+                         Create SSH SOCKS5 tunnel via jumphost
+```
+
 ### SOCKS5 Proxy Options
 ```
 --socks-host HOST        SOCKS5 proxy host (default: 127.0.0.1)
@@ -111,9 +125,22 @@ When using `--direct`, the script skips the SOCKS5 tunnel and creates an .rdp fi
 
 ## Use Cases
 
-### Connecting Through SSH SOCKS5 Tunnel
+### Connecting Through SSH Tunnel (Integrated)
 
-First, create an SSH SOCKS5 tunnel:
+Use `--via` to automatically create an SSH tunnel and connect:
+```bash
+./rdp-connect jeff@internal-windows-server.local --via user@jumphost.example.com
+```
+
+The script will:
+1. Create an SSH SOCKS5 tunnel to the jumphost
+2. Set up a socat tunnel through the SSH proxy
+3. Connect to the internal Windows server
+4. Clean up both tunnels when you're done
+
+### Connecting Through SSH SOCKS5 Tunnel (Manual)
+
+Alternatively, create your own SSH SOCKS5 tunnel first:
 ```bash
 ssh -D 5000 -N user@jumphost.example.com
 ```
